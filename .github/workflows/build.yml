@@ -1,0 +1,214 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    outputs:
+      build_time: ${{ steps.timestamp.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate build timestamp
+        id: timestamp
+        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Oxlint (Vue/TS)
+        run: pnpm lint
+
+      - name: Test (Vitest)
+        run: pnpm test
+
+      - name: Clippy (Rust)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Test (Rust)
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  build:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - platform: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+          - platform: windows-latest
+            target: aarch64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          FRESCO_BUILD_TIME: ${{ needs.lint.outputs.build_time }}
+          # Override Tauri's default "skip DMG Finder prettifying on CI" — without this
+          # the macOS DMG ships without background image and custom icon positions.
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ startsWith(matrix.platform, 'macos') && 'true' || '' }}
+        with:
+          args: --target ${{ matrix.target }} ${{ startsWith(matrix.platform, 'windows') && '--no-bundle' || '' }}
+
+      - name: Upload portable (Linux)
+        if: startsWith(matrix.platform, 'ubuntu')
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresco-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+      - name: Upload portable (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresco-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Upload portable (Windows)
+        if: startsWith(matrix.platform, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresco-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/fresco.exe
+          if-no-files-found: error
+
+  release:
+    needs: [lint, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          # Linux
+          cp artifacts/fresco-x86_64-unknown-linux-gnu/*.AppImage release/Fresco_Linux_x86_64.AppImage
+          cp artifacts/fresco-aarch64-unknown-linux-gnu/*.AppImage release/Fresco_Linux_ARM64.AppImage
+          # macOS
+          cp artifacts/fresco-aarch64-apple-darwin/*.dmg release/Fresco_macOS_ARM64.dmg
+          cp artifacts/fresco-x86_64-apple-darwin/*.dmg release/Fresco_macOS_x86_64.dmg
+          # Windows
+          cp artifacts/fresco-x86_64-pc-windows-msvc/fresco.exe release/Fresco_Windows_x86_64.exe
+          cp artifacts/fresco-aarch64-pc-windows-msvc/fresco.exe release/Fresco_Windows_ARM64.exe
+
+      - name: Delete existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --yes --cleanup-tag || true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_TIME: ${{ needs.lint.outputs.build_time }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Install
+
+          | Platform | Asset |
+          |----------|-------|
+          | macOS (Apple Silicon) | `Fresco_macOS_ARM64.dmg` |
+          | macOS (Intel) | `Fresco_macOS_x86_64.dmg` |
+          | Windows (x86_64) | `Fresco_Windows_x86_64.exe` |
+          | Windows (ARM64) | `Fresco_Windows_ARM64.exe` |
+          | Linux (x86_64) | `Fresco_Linux_x86_64.AppImage` |
+          | Linux (ARM64) | `Fresco_Linux_ARM64.AppImage` |
+
+          ### First launch on macOS
+
+          Fresco is not yet signed with an Apple Developer ID, so macOS blocks the first launch.
+          Expected dialog: **"Fresco cannot be opened because the developer cannot be verified."**
+
+          1. Click **Done** in the warning.
+          2. Open **System Settings → Privacy & Security**.
+          3. Scroll to the bottom and click **Open Anyway** next to Fresco.
+          4. Confirm in the follow-up prompt.
+
+          macOS remembers the approval — subsequent launches open Fresco with a normal double-click.
+
+          ---
+          EOF
+          # Format must stay `build_time:<stamp>` (no space) — the app's
+          # update-check logic parses release notes with `/build_time:(\S+)/`.
+          # See src/composables/useUpdateCheck.ts -> extractBuildTime.
+          printf 'build_time:%s\n' "$BUILD_TIME" >> release-notes.md
+          gh release create latest release/* \
+            --title "Release $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --notes-file release-notes.md \
+            --latest \
+            --draft=false

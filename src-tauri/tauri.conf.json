@@ -1,0 +1,96 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BOINC Pulse",
+  "version": "0.1.0",
+  "identifier": "com.github.chickenfillett.boincpulse",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "BOINC Pulse",
+        "width": 460,
+        "height": 640,
+        "minWidth": 360,
+        "minHeight": 480,
+        "resizable": true,
+        "maximizable": false,
+        "fullscreen": false,
+        "center": true,
+        "backgroundColor": "#000000"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "cli": {
+      "args": [
+        {
+          "name": "autostart",
+          "short": "a",
+          "description": "Start minimized to tray",
+          "takesValue": false
+        },
+        {
+          "name": "datadir",
+          "short": "d",
+          "description": "BOINC data directory",
+          "takesValue": true
+        },
+        {
+          "name": "host",
+          "short": "n",
+          "description": "Remote host",
+          "takesValue": true
+        },
+        {
+          "name": "port",
+          "short": "g",
+          "description": "RPC port",
+          "takesValue": true
+        },
+        {
+          "name": "password",
+          "short": "p",
+          "description": "RPC password",
+          "takesValue": true
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "dmg": {
+        "background": "icons/dmg-background.png",
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        }
+      }
+    }
+  }
+}

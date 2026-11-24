@@ -1,0 +1,134 @@
+{
+  "worldcommunitygrid.org": {
+    "name": "世界社区网格",
+    "short": "WCG",
+    "about": "公益计算平台，2004 年由 IBM 发起，现由 Krembil 研究所运营。算力用于艾滋病、结核病、癌症、寨卡与登革热、清洁水源、低成本太阳能等研究。",
+    "home": "https://www.worldcommunitygrid.org/"
+  },
+  "einsteinathome.org": {
+    "name": "爱因斯坦@家",
+    "short": "Einstein",
+    "about": "搜索引力波：从 LIGO 数据中寻找脉冲星的连续引力波信号，并检验爱因斯坦的广义相对论。由威斯康星大学密尔沃基分校与马克斯·普朗克引力物理研究所运营。",
+    "home": "https://einsteinathome.org/"
+  },
+  "boinc.bakerlab.org": {
+    "name": "罗斯塔@家",
+    "short": "Rosetta",
+    "about": "华盛顿大学 Baker 实验室的蛋白质结构预测与设计研究，是 AlphaFold 之前该领域最重要的公开计算项目之一。",
+    "home": "https://boinc.bakerlab.org/"
+  },
+  "lhcathome.cern.ch": {
+    "name": "大型强子对撞机@家",
+    "short": "LHC",
+    "about": "欧洲核子研究中心（CERN）的加速器物理模拟，用于评估粒子束在 LHC 中的长期稳定性。",
+    "home": "https://lhcathome.cern.ch/"
+  },
+  "milkyway.cs.rpi.edu": {
+    "name": "银河系@家",
+    "short": "Milkyway",
+    "about": "用斯隆数字巡天数据拟合银河系的三维结构，重建其星流与暗物质分布。由伦斯勒理工学院运营。",
+    "home": "https://milkyway.cs.rpi.edu/milkyway/"
+  },
+  "primegrid.com": {
+    "name": "素数网格",
+    "short": "PrimeGrid",
+    "about": "大规模素数搜索，覆盖 Sierpinski/Riesel 问题、广义费马数与梅森数候选，多个子项目曾发现世界纪录级素数。",
+    "home": "https://www.primegrid.com/"
+  },
+  "asteroidsathome.net": {
+    "name": "小行星@家",
+    "short": "Asteroids",
+    "about": "用测光数据反演小行星的形状与自转轴，为行星防御和太阳系演化提供基础参数。由布拉格查理大学运营。",
+    "home": "https://asteroidsathome.net/"
+  },
+  "climateprediction.net": {
+    "name": "气候预测网",
+    "short": "CPDN",
+    "about": "牛津大学主持的大规模气候模型集合模拟，用大量扰动初值估计气候敏感度与极端天气概率。",
+    "home": "https://www.climateprediction.net/"
+  },
+  "gpugrid.net": {
+    "name": "GPU 网格",
+    "short": "GPUGrid",
+    "about": "巴塞罗那超级计算中心主导的分子动力学模拟，研究蛋白质折叠、药物靶点与神经退行性疾病相关机制。",
+    "home": "https://www.gpugrid.net/"
+  },
+  "moowrapper.com": {
+    "name": "Moo! 封装",
+    "short": "Moo!",
+    "about": "以 BOINC 形式运行分布式.net 的 RC5-72 密钥挑战，主要用于压测与积分型参与。",
+    "home": "https://moowrapper.com/"
+  },
+  "universeathome.pl": {
+    "name": "宇宙@家",
+    "short": "Universe",
+    "about": "波兰的宇宙学与天体物理计算，涉及引力透镜、星系演化与脉冲星模型。",
+    "home": "https://universeathome.pl/"
+  },
+  "cosmologyathome.org": {
+    "name": "宇宙学@家",
+    "short": "Cosmology",
+    "about": "用观测数据拟合宇宙学参数（暗能量、曲率、哈勃常数），检验标准宇宙学模型。",
+    "home": "https://www.cosmologyathome.org/"
+  },
+  "sidock.eu": {
+    "name": "SiDock@家",
+    "short": "SiDock",
+    "about": "抗病毒药物的分子对接筛选，早期针对 SARS-CoV-2 主蛋白酶，现扩展到其他病毒靶点。",
+    "home": "https://www.sidock.eu/"
+  },
+  "numberfields.asu.edu": {
+    "name": "数域@家",
+    "short": "NumberFields",
+    "about": "亚利桑那州立大学的数域计算，寻找低判别式数域并验证相关数论猜想。",
+    "home": "https://numberfields.asu.edu/NumberFields/"
+  },
+  "gerasim.com.ua": {
+    "name": "格拉西姆@家",
+    "short": "Gerasim",
+    "about": "离散数学与图论计算，包括极值图、拉姆齐型问题与组合优化的穷举验证。",
+    "home": "https://gerasim.com.ua/"
+  },
+  "rechenkraft.net": {
+    "name": "yoyo@家",
+    "short": "yoyo",
+    "about": "多子项目封装平台，运行 evolution@home、Muon 等小型科学计算，也为其他项目提供 BOINC 适配。",
+    "home": "https://www.rechenkraft.net/yoyo/"
+  },
+  "wuprop.boinc-af.org": {
+    "name": "WUProp@家",
+    "short": "WUProp",
+    "about": "收集各项目任务的运行时长与内存占用，形成公开的 BOINC 项目性能数据库。",
+    "home": "https://wuprop.boinc-af.org/"
+  },
+  "gene.disi.unitn.it": {
+    "name": "TN 网格",
+    "short": "TN-Grid",
+    "about": "意大利特伦托大学的基因表达数据分析，研究非编码 RNA 与调控网络。",
+    "home": "https://gene.disi.unitn.it/test/"
+  },
+  "setiathome.berkeley.edu": {
+    "name": "SETI@家",
+    "short": "SETI",
+    "about": "搜寻地外文明：分析射电望远镜数据寻找窄带信号。2020 年 3 月起停止分发新任务，项目转入数据分析阶段。",
+    "home": "https://setiathome.berkeley.edu/"
+  },
+  "ramanujanmachine.com": {
+    "name": "拉马努金机器",
+    "short": "Ramanujan",
+    "about": "用算法自动发现数学常数的新连分数与无穷级数表达式，再由数学家证明。",
+    "home": "https://www.ramanujanmachine.com/"
+  },
+  "denis.usj.es": {
+    "name": "Denis@家",
+    "short": "Denis",
+    "about": "西班牙的分布式计算项目，早期做天体物理模拟，后扩展到生物医学与机器学习任务。",
+    "home": "https://denis.usj.es/denisathome/"
+  },
+  "boinc.berkeley.edu": {
+    "name": "BOINC 官方测试",
+    "short": "BOINC",
+    "about": "加州大学伯克利分校的 BOINC 官方测试项目，用于验证客户端与服务器的新功能。",
+    "home": "https://boinc.berkeley.edu/"
+  }
+}

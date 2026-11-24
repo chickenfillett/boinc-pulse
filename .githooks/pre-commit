@@ -1,0 +1,47 @@
+#!/bin/sh
+echo "Running lints..."
+
+# Oxlint (Vue/TS)
+npx oxlint src/
+if [ $? -ne 0 ]; then
+  echo "oxlint failed. Fix the issues above before committing."
+  exit 1
+fi
+
+# Clippy (Rust)
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings 2>&1
+if [ $? -ne 0 ]; then
+  echo "clippy failed. Fix the issues above before committing."
+  exit 1
+fi
+
+echo "All lints passed."
+
+echo "Running type checks..."
+
+# Vue type-check (catches errors vitest won't — it strips types via esbuild)
+npx vue-tsc --noEmit
+if [ $? -ne 0 ]; then
+  echo "Vue type check failed. Fix the issues above before committing."
+  exit 1
+fi
+
+echo "Type checks passed."
+
+echo "Running tests..."
+
+# Frontend tests (vitest)
+npx vitest run
+if [ $? -ne 0 ]; then
+  echo "Frontend tests failed. Fix the issues above before committing."
+  exit 1
+fi
+
+# Rust tests (also compiles the code, so separate cargo build is unnecessary)
+cargo test --manifest-path src-tauri/Cargo.toml 2>&1
+if [ $? -ne 0 ]; then
+  echo "Rust tests failed. Fix the issues above before committing."
+  exit 1
+fi
+
+echo "All checks passed."

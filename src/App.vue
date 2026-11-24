@@ -1,0 +1,1516 @@
+<script setup lang="ts">
+import { ref, computed, watch, onMounted, onUnmounted, provide } from "vue";
+import { onKeyStroke, useEventListener } from "@vueuse/core";
+import { useI18n } from "vue-i18n";
+import { invoke } from "./lib/typedInvoke";
+import { useRoute, useRouter } from "vue-router";
+import { useConnectionStore } from "./stores/connection";
+import { CONNECTION_STATE } from "./types/boinc";
+import ActivityControls from "./components/ActivityControls.vue";
+import PreferencesDialog from "./components/PreferencesDialog.vue";
+import AboutDialog from "./components/AboutDialog.vue";
+import StatusBar from "./components/StatusBar.vue";
+import SelectComputerDialog from "./components/SelectComputerDialog.vue";
+import ExitConfirmDialog from "./components/ExitConfirmDialog.vue";
+import ToastContainer from "./components/ToastContainer.vue";
+import UpdateBanner from "./components/UpdateBanner.vue";
+import ProjectAttachWizard from "./components/ProjectAttachWizard.vue";
+import AccountManagerWizard from "./components/AccountManagerWizard.vue";
+import Tooltip from "./components/Tooltip.vue";
+import { useWindowState } from "./composables/useWindowState";
+import { useUpdateCheck } from "./composables/useUpdateCheck";
+import { getOS, defaultDataDir } from "./composables/usePlatform";
+import { notifyConnectionLost } from "./composables/useNotifications";
+import { useTasksStore } from "./stores/tasks";
+import { useProjectsStore } from "./stores/projects";
+import { useTransfersStore } from "./stores/transfers";
+import { useClientStore } from "./stores/client";
+import { getSuspendReasonText } from "./composables/useSuspendReasons";
+import { useStatisticsStore } from "./stores/statistics";
+import { useMessagesStore } from "./stores/messages";
+import { useNoticesStore } from "./stores/notices";
+import { useDiskUsageStore } from "./stores/diskUsage";
+import { useWorkunitAppsStore } from "./stores/workunitApps";
+import { usePreferencesStore } from "./stores/preferences";
+import { useManagerSettingsStore } from "./stores/managerSettings";
+import { useToastStore } from "./stores/toast";
+import OnboardingTakeoverDialog from "./components/OnboardingTakeoverDialog.vue";
+import BoincInstallDialog from "./components/BoincInstallDialog.vue";
+import type { ManagerAutostartInfo, BoincInstallOptions } from "./types/boinc";
+import {
+  setRunMode,
+  setGpuMode,
+  shutdownClient,
+  disconnect,
+  startBoincClient,
+} from "./composables/useRpc";
+import { NAV_ICONS } from "./components/icons/emptyIcons";
+
+const navIconFor = (name: string) => NAV_ICONS[name] ?? NAV_ICONS.grid;
+
+const { t } = useI18n();
+const connection = useConnectionStore();
+const route = useRoute();
+const router = useRouter();
+const tasksStore = useTasksStore();
+const projectsStore = useProjectsStore();
+const transfersStore = useTransfersStore();
+const clientStore = useClientStore();
+const statisticsStore = useStatisticsStore();
+const messagesStore = useMessagesStore();
+const noticesStore = useNoticesStore();
+const diskUsageStore = useDiskUsageStore();
+const workunitAppsStore = useWorkunitAppsStore();
+const preferencesStore = usePreferencesStore();
+const managerSettingsStore = useManagerSettingsStore(); // Initialize early to apply theme before ConnectView renders
+const toastStore = useToastStore();
+const showPreferences = ref(false);
+const showAbout = ref(false);
+const showSelectComputer = ref(false);
+const showAttachWizard = ref(false);
+const showAcctMgr = ref(false);
+provide("openAttachWizard", () => { showAttachWizard.value = true; });
+provide("openAcctMgr", () => { showAcctMgr.value = true; });
+const prefsInitialTab = ref<"computing" | "manager">("computing");
+const showExitConfirm = ref(false);
+const initializing = ref(true);
+const loadingStatus = ref(t("app.loading.connectingLocal"));
+const sidebarOpen = ref(false);
+const showMoreSheet = ref(false);
+const collapsedGroups = ref<string[]>(["advanced"]);
+
+/** Bottom tab bar is the primary navigation in the 460px window. */
+const moreSheetItems = computed(() => [
+  { path: "/notices", label: t("sidebar.notices"), icon: "bell" },
+  { path: "/host", label: t("sidebar.hostInfo"), icon: "monitor" },
+  { path: "/disk", label: t("sidebar.diskUsage"), icon: "disk" },
+  { path: "/transfers", label: t("sidebar.transfers"), icon: "transfer" },
+  { path: "/event-log", label: t("sidebar.eventLog"), icon: "message" },
+]);
+
+function goFromSheet(path: string) {
+  showMoreSheet.value = false;
+  router.push(path);
+}
+
+function openPreferences(tab: "computing" | "manager" = "computing") {
+  showMoreSheet.value = false;
+  prefsInitialTab.value = tab;
+  showPreferences.value = true;
+}
+
+function isCollapsed(key: string): boolean {
+  return collapsedGroups.value.includes(key);
+}
+
+function toggleCollapsed(key: string) {
+  if (isCollapsed(key)) {
+    collapsedGroups.value = collapsedGroups.value.filter((l) => l !== key);
+  } else {
+    collapsedGroups.value = [...collapsedGroups.value, key];
+  }
+}
+const hasSidebar = computed(
+  () =>
+    connection.state === CONNECTION_STATE.CONNECTED ||
+    connection.state === CONNECTION_STATE.RECONNECTING,
+);
+
+const hasStatusBar = computed(() => {
+  const client = useClientStore();
+  return !!(
+    getSuspendReasonText(client.status.task_suspend_reason) ||
+    getSuspendReasonText(client.status.gpu_suspend_reason)
+  );
+});
+
+const statusDotClass = computed(() => {
+  const state = connection.state;
+  if (state === CONNECTION_STATE.CONNECTED) return "status-dot-connected";
+  if (state === CONNECTION_STATE.RECONNECTING) return "status-dot-reconnecting";
+  if (
+    state === CONNECTION_STATE.AUTH_ERROR ||
+    (typeof state === "object" && "Error" in state)
+  )
+    return "status-dot-error";
+  return "status-dot-disconnected";
+});
+
+const statusText = computed(() => {
+  const state = connection.state;
+  if (state === CONNECTION_STATE.CONNECTED) return t("statusBar.connected");
+  if (state === CONNECTION_STATE.RECONNECTING)
+    return t("statusBar.reconnecting", {
+      attempt: connection.reconnectAttempt,
+      max: connection.maxReconnectAttempts,
+    });
+  if (state === CONNECTION_STATE.CONNECTING) return t("statusBar.connecting");
+  if (state === CONNECTION_STATE.AUTH_ERROR) return t("statusBar.authError");
+  if (state === CONNECTION_STATE.DISCONNECTED)
+    return t("statusBar.disconnected");
+  if (typeof state === "object" && "Error" in state)
+    return t("statusBar.error");
+  return t("statusBar.disconnected");
+});
+let autoConnectCancelled = false;
+
+useWindowState();
+const {
+  updateAvailable,
+  dismissed,
+  updateOnExit,
+  downloaded,
+  downloading,
+  checkForUpdates: doUpdateCheck,
+} = useUpdateCheck();
+
+// ── Auto-connect to local BOINC client on startup ───────────────
+
+function startAllPolling() {
+  messagesStore.resetSessionState();
+  noticesStore.resetSessionState();
+  tasksStore.startPolling();
+  projectsStore.startPolling();
+  transfersStore.startPolling();
+  clientStore.startPolling();
+  statisticsStore.startPolling();
+  messagesStore.startPolling();
+  noticesStore.startPolling();
+  diskUsageStore.startPolling();
+  workunitAppsStore.startPolling();
+  preferencesStore.prefetchPreferences();
+}
+
+async function autoConnect() {
+  const dataDir = defaultDataDir(await getOS());
+  loadingStatus.value = t("app.loading.connectingLocal");
+  await connection.connectToLocal(dataDir);
+
+  // If connection failed with a non-auth error, try auto-starting BOINC
+  if (
+    connection.state !== CONNECTION_STATE.CONNECTED &&
+    connection.state !== CONNECTION_STATE.AUTH_ERROR
+  ) {
+    loadingStatus.value = t("app.loading.startingBoinc");
+    try {
+      await startBoincClient(dataDir);
+      loadingStatus.value = t("app.loading.boincStarted");
+      await connection.connectToLocal(dataDir);
+    } catch {
+      // BOINC not installed or failed to start — fall back to ConnectView
+    }
+  }
+
+  if (autoConnectCancelled) return;
+
+  if (connection.state === CONNECTION_STATE.CONNECTED) {
+    startAllPolling();
+    router.push("/");
+    // Flip out of the loading screen BEFORE awaiting onboarding —
+    // the dialog is mounted only inside the v-else branch, so leaving
+    // `initializing` true would mean the dialog never renders and the
+    // await below would hang the startup flow forever.
+    initializing.value = false;
+    await runOnboardingIfNeeded();
+    invoke("cleanup_old_binary").catch(() => {});
+    return;
+  }
+
+  // Auto-connect failed. If the binary is missing, give the user a chance
+  // to install it; the install-onboarding dialog lives in the v-else branch
+  // so we must clear `initializing` before awaiting it (same reason as above).
+  initializing.value = false;
+  if (autoConnectCancelled) return;
+
+  const recovered = await runInstallOnboardingIfNeeded(dataDir);
+  if (autoConnectCancelled) return;
+
+  if (recovered) {
+    startAllPolling();
+    router.push("/");
+    await runOnboardingIfNeeded();
+    invoke("cleanup_old_binary").catch(() => {});
+    return;
+  }
+
+  router.replace("/connect");
+}
+
+// Tauri v2 rejects a command with either `Error: <msg>` or a named
+// `InvokeError: <msg>` prefix depending on how the error is constructed.
+// Normalize both shapes before comparing against sentinels like "manual".
+function errMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/^(?:[A-Za-z]\w*Error|Error):\s*/, "").trim();
+}
+
+// ── BOINC install onboarding (no binary) ────────────────────────
+
+type InstallChoice = "install-succeeded" | "skip";
+
+const installOptions = ref<BoincInstallOptions | null>(null);
+const showInstallDialog = ref(false);
+const installing = ref(false);
+let installResolver: ((choice: InstallChoice) => void) | null = null;
+
+async function runInstallOnboardingIfNeeded(dataDir: string): Promise<boolean> {
+  if (managerSettingsStore.settings.installOnboardingCompleted) return false;
+
+  let opts: BoincInstallOptions | undefined;
+  try {
+    opts = await invoke("detect_boinc_install_options");
+  } catch {
+    // Detection failure shouldn't block startup — fall through to ConnectView.
+    return false;
+  }
+
+  if (!opts || opts.boinc_present) {
+    // Binary exists but we still couldn't connect — not an install problem.
+    return false;
+  }
+
+  installOptions.value = opts;
+  showInstallDialog.value = true;
+  loadingStatus.value = "";
+
+  const choice = await new Promise<InstallChoice>((resolve) => {
+    installResolver = resolve;
+  });
+  installResolver = null;
+  showInstallDialog.value = false;
+  installOptions.value = null;
+  managerSettingsStore.settings.installOnboardingCompleted = true;
+
+  if (choice !== "install-succeeded") return false;
+
+  try {
+    await connection.connectToLocal(dataDir);
+  } catch {
+    return false;
+  }
+  return connection.state === CONNECTION_STATE.CONNECTED;
+}
+
+async function handleInstallBrew() {
+  const dataDir = defaultDataDir(await getOS());
+  installing.value = true;
+  try {
+    await invoke("install_boinc_via_brew");
+    try {
+      await startBoincClient(dataDir);
+    } catch (err) {
+      const msg = errMessage(err).slice(0, 200);
+      toastStore.show(
+        msg || t("onboarding.install.brewError"),
+        "error",
+        8000,
+      );
+      installResolver?.("skip");
+      return;
+    }
+    installResolver?.("install-succeeded");
+  } catch (err) {
+    const msg = errMessage(err).slice(0, 200);
+    toastStore.show(
+      msg || t("onboarding.install.brewError"),
+      "error",
+      8000,
+    );
+    installResolver?.("skip");
+  } finally {
+    installing.value = false;
+  }
+}
+
+async function handleCopyCommand(cmd: string) {
+  try {
+    await navigator.clipboard.writeText(cmd);
+    toastStore.show(t("onboarding.install.copied"), "success");
+  } catch {
+    // Clipboard unavailable (e.g. insecure origin) — ignore silently; the
+    // command is still visible in the dialog for manual copy.
+  }
+}
+
+async function handleOpenUrl(url: string) {
+  try {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  } catch {
+    window.open(url, "_blank");
+  }
+  installResolver?.("skip");
+}
+
+function handleSkipInstall() {
+  installResolver?.("skip");
+}
+
+// ── BOINC Manager takeover onboarding ───────────────────────────
+
+const onboardingInfo = ref<ManagerAutostartInfo | null>(null);
+const showOnboarding = ref(false);
+let onboardingResolver: (() => void) | null = null;
+
+async function runOnboardingIfNeeded() {
+  // Single-user build: skip all first-run dialogs so the dashboard is
+  // visible immediately with zero clicks.
+  managerSettingsStore.settings.onboardingCompleted = true;
+  return;
+
+  let info: ManagerAutostartInfo | null = null;
+  try {
+    info = await invoke("detect_boinc_manager_autostart");
+  } catch {
+    // Detection is best-effort — a failure shouldn't block the app.
+    managerSettingsStore.settings.onboardingCompleted = true;
+    return;
+  }
+
+  if (!info) {
+    managerSettingsStore.settings.onboardingCompleted = true;
+    return;
+  }
+
+  onboardingInfo.value = info;
+  showOnboarding.value = true;
+  loadingStatus.value = "";
+
+  await new Promise<void>((resolve) => {
+    onboardingResolver = resolve;
+  });
+  onboardingResolver = null;
+  managerSettingsStore.settings.onboardingCompleted = true;
+}
+
+async function handleTakeover() {
+  const info = onboardingInfo.value;
+  showOnboarding.value = false;
+  if (!info) {
+    onboardingResolver?.();
+    return;
+  }
+  try {
+    await invoke("disable_boinc_manager_autostart", { info });
+    toastStore.show(t("onboarding.takeover.successToast"), "success");
+  } catch (err) {
+    const message = errMessage(err);
+    if (message === "manual") {
+      if (info.kind === "MacLoginItem") {
+        // macOS SMAppService Login Items can't be toggled by third-party apps;
+        // point the user at the exact System Settings pane.
+        try {
+          await invoke("open_login_items_settings");
+        } catch {
+          // Ignore — the instructional toast still points the user at the setting.
+        }
+        toastStore.show(t("onboarding.takeover.manualToast"), "info", 8000);
+      } else if (
+        info.kind === "LinuxAutostart" &&
+        info.data.system_wide
+      ) {
+        // /etc/xdg/autostart can only be edited with root; show the path.
+        toastStore.show(
+          t("onboarding.takeover.linuxManualToast", {
+            path: info.data.desktop_path,
+          }),
+          "info",
+          10000,
+        );
+      } else if (info.kind === "WindowsRunKey" && info.data.hive === "HKLM") {
+        // HKLM\...\Run requires admin to delete. Rather than a cryptic
+        // permission-denied toast, point the user at the entry they need
+        // to remove manually (or re-run BOINC Pulse elevated).
+        toastStore.show(
+          t("onboarding.takeover.windowsHklmManualToast", {
+            valueName: info.data.value_name,
+          }),
+          "info",
+          10000,
+        );
+      } else {
+        toastStore.show(t("onboarding.takeover.errorToast"), "error");
+      }
+    } else {
+      toastStore.show(t("onboarding.takeover.errorToast"), "error");
+    }
+  }
+  onboardingResolver?.();
+}
+
+function handleKeepBoth() {
+  showOnboarding.value = false;
+  onboardingResolver?.();
+}
+
+function cancelAutoConnect() {
+  autoConnectCancelled = true;
+  initializing.value = false;
+  router.replace("/connect");
+}
+
+// ── Tauri event listeners for system tray ───────────────────────
+type UnlistenFn = () => void;
+const unlisteners: UnlistenFn[] = [];
+
+// Disable right-click context menu in the entire app,
+// but allow native context menu in editable elements (input, textarea, contenteditable)
+useEventListener(document, "contextmenu", (e) => {
+  if (!isTextEditable(e.target)) {
+    e.preventDefault();
+  }
+});
+
+// Prevent Backspace from triggering browser-like back navigation in the WebView.
+// Only allow Backspace in text-editable elements (text inputs, textareas, contenteditable).
+const TEXT_INPUT_TYPES = new Set([
+  "text",
+  "password",
+  "search",
+  "email",
+  "url",
+  "tel",
+  "number",
+]);
+
+function isTextEditable(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (target.isContentEditable) return true;
+  if (target instanceof HTMLInputElement) {
+    return TEXT_INPUT_TYPES.has(target.type);
+  }
+  return false;
+}
+
+onKeyStroke("Backspace", (e) => {
+  if (!isTextEditable(e.target)) {
+    e.preventDefault();
+  }
+});
+
+onMounted(async () => {
+  doUpdateCheck();
+  autoConnect();
+
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+
+    // Tray actions
+    unlisteners.push(
+      await listen<string>("tray-action", (event) => {
+        switch (event.payload) {
+          case "snooze_cpu":
+            setRunMode(3, 3600).catch(() => {});
+            break;
+          case "snooze_gpu":
+            setGpuMode(3, 3600).catch(() => {});
+            break;
+          case "resume_cpu":
+            setRunMode(4, 0).catch(() => {});
+            break;
+          case "resume_gpu":
+            setGpuMode(4, 0).catch(() => {});
+            break;
+        }
+      }),
+    );
+
+    // Window close is handled in Rust (on_window_event in lib.rs)
+  } catch {
+    // Not in Tauri environment (e.g. tests, browser dev)
+  }
+});
+
+onUnmounted(() => {
+  unlisteners.forEach((fn) => fn());
+});
+
+async function doExit(doShutdownClient: boolean) {
+  showExitConfirm.value = false;
+  try {
+    if (doShutdownClient) {
+      await shutdownClient();
+    }
+    await disconnect();
+  } catch {
+    // ignore
+  }
+  if (updateOnExit.value && downloaded.value && !downloading.value) {
+    try {
+      const shouldRelaunch: boolean = await invoke("install_update");
+      const process = await import("@tauri-apps/plugin-process");
+      if (shouldRelaunch) {
+        await process.relaunch();
+      } else {
+        await process.exit(0);
+      }
+      return;
+    } catch {
+      // Install failed — exit normally
+    }
+  }
+  try {
+    const { getCurrentWebviewWindow } =
+      await import("@tauri-apps/api/webviewWindow");
+    await getCurrentWebviewWindow().destroy();
+  } catch {
+    // ignore
+  }
+}
+
+const navGroups = computed(() => [
+  {
+    key: "computing",
+    label: t("sidebar.computing"),
+    items: [
+      { path: "/", label: t("sidebar.overview"), icon: "grid" },
+      { path: "/tasks", label: t("sidebar.tasks"), icon: "cpu" },
+      { path: "/projects", label: t("sidebar.projects"), icon: "folder" },
+      { path: "/notices", label: t("sidebar.notices"), icon: "bell" },
+      { path: "/statistics", label: t("sidebar.statistics"), icon: "chart" },
+    ],
+  },
+  {
+    key: "system",
+    label: t("sidebar.system"),
+    items: [
+      { path: "/disk", label: t("sidebar.diskUsage"), icon: "disk" },
+      { path: "/host", label: t("sidebar.hostInfo"), icon: "monitor" },
+    ],
+  },
+  {
+    key: "advanced",
+    label: t("sidebar.advanced"),
+    collapsible: true,
+    items: [
+      { path: "/transfers", label: t("sidebar.transfers"), icon: "transfer" },
+      { path: "/event-log", label: t("sidebar.eventLog"), icon: "message" },
+    ],
+  },
+]);
+
+function isActive(path: string): boolean {
+  return route.path === path;
+}
+
+// Auto-expand collapsed group when its route is active
+watch(
+  () => route.path,
+  (path) => {
+    for (const group of navGroups.value) {
+      if (group.collapsible && group.items.some((i) => i.path === path)) {
+        collapsedGroups.value = collapsedGroups.value.filter(
+          (l) => l !== group.key,
+        );
+      }
+    }
+  },
+);
+
+let wasConnected = false;
+watch(
+  () => connection.state,
+  async (newState) => {
+    if (newState === CONNECTION_STATE.CONNECTED) {
+      wasConnected = true;
+    } else if (newState === CONNECTION_STATE.RECONNECTING) {
+      // Don't reset wasConnected — we're trying to reconnect
+    } else if (wasConnected && newState !== CONNECTION_STATE.CONNECTING) {
+      wasConnected = false;
+      notifyConnectionLost();
+    }
+  },
+);
+
+</script>
+
+<template>
+  <div v-if="initializing" class="loading-screen">
+    <div class="loading-content">
+      <img
+        class="loading-logo"
+        src="/icon-dark.png"
+        alt="BOINC Pulse"
+        width="96"
+        height="96"
+      />
+      <span class="loading-app-title">BOINC Pulse</span>
+      <div class="loading-spinner"></div>
+      <span class="loading-text">{{ loadingStatus }}</span>
+      <button class="btn loading-cancel" @click="cancelAutoConnect">
+        {{ $t("app.loading.cancel") }}
+      </button>
+    </div>
+  </div>
+  <div v-else class="app" :class="{ 'has-sidebar': hasSidebar }">
+    <a href="#main-content" class="skip-link">{{ $t("app.skipToContent") }}</a>
+    <button
+      v-if="hasSidebar"
+      class="hamburger-btn"
+      :aria-label="$t('sidebar.toggleSidebar')"
+      @click="sidebarOpen = !sidebarOpen"
+    >
+      <svg viewBox="0 0 20 20" fill="currentColor" width="20" height="20">
+        <path
+          fill-rule="evenodd"
+          d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z"
+          clip-rule="evenodd"
+        />
+      </svg>
+    </button>
+    <div
+      v-if="sidebarOpen && hasSidebar"
+      class="sidebar-backdrop"
+      @click="sidebarOpen = false"
+    ></div>
+    <aside v-if="hasSidebar" class="sidebar" :class="{ open: sidebarOpen }">
+      <nav class="sidebar-nav">
+        <div v-for="group in navGroups" :key="group.key" class="nav-group">
+          <button
+            v-if="group.collapsible"
+            type="button"
+            class="nav-group-label clickable"
+            :aria-expanded="!isCollapsed(group.key)"
+            @click="toggleCollapsed(group.key)"
+          >
+            <svg
+              class="nav-group-chevron"
+              :class="{ collapsed: isCollapsed(group.key) }"
+              aria-hidden="true"
+              width="12"
+              height="12"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+            >
+              <path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" />
+            </svg>
+            {{ group.label }}
+          </button>
+          <span v-else class="nav-group-label">
+            {{ group.label }}
+          </span>
+          <router-link
+            v-for="item in group.items"
+            v-show="!group.collapsible || !isCollapsed(group.key)"
+            :key="item.path"
+            :to="item.path"
+            class="nav-item"
+            :class="{ active: isActive(item.path) }"
+            @click="sidebarOpen = false"
+          >
+            <component :is="navIconFor(item.icon)" class="nav-icon" :size="16" :stroke-width="1.7" />
+            {{ item.label }}
+          </router-link>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <ActivityControls />
+        <div class="sidebar-actions">
+          <Tooltip :text="$t('statusBar.clickToSwitch')" placement="top">
+            <div class="sidebar-status" @click="showSelectComputer = true">
+              <span class="status-dot" :class="statusDotClass" />
+              <span class="status-label">{{ statusText }}</span>
+            </div>
+          </Tooltip>
+          <div class="sidebar-actions-btns">
+            <Tooltip :text="$t('sidebar.preferences')">
+              <button
+                class="sidebar-action-btn"
+                :aria-label="$t('sidebar.preferences')"
+                @click="
+                  prefsInitialTab = 'computing';
+                  showPreferences = true;
+                "
+              >
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  width="18"
+                  height="18"
+                >
+                  <path
+                    fill-rule="evenodd"
+                    d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                    clip-rule="evenodd"
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+            <Tooltip :text="$t('statusBar.about')">
+              <button
+                class="sidebar-action-btn"
+                :aria-label="$t('statusBar.about')"
+                @click="showAbout = true"
+              >
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  width="18"
+                  height="18"
+                >
+                  <path
+                    fill-rule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                    clip-rule="evenodd"
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      </div>
+    </aside>
+    <main id="main-content" class="main-content" :style="{ '--status-bar-offset': hasStatusBar ? '28px' : '0px' }">
+      <UpdateBanner v-if="updateAvailable && !dismissed" />
+      <router-view />
+    </main>
+
+    <!-- Bottom tab bar: the primary navigation at 460px, thumb-reachable,
+         one tap per destination, no drawer to open first. -->
+    <nav v-if="hasSidebar" class="bottom-tabs" :aria-label="$t('sidebar.mainNav')">
+      <router-link to="/" class="tab" :class="{ active: route.path === '/' }">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="19" height="19">
+          <path d="M3 3h6v6H3V3zm8 0h6v6h-6V3zM3 11h6v6H3v-6zm8 0h6v6h-6v-6z" />
+        </svg>
+        <span>{{ $t("sidebar.overview") }}</span>
+      </router-link>
+      <router-link
+        to="/tasks"
+        class="tab"
+        :class="{ active: route.path === '/tasks' }"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" width="19" height="19">
+          <path d="M13 7H7v6h6V7z" />
+          <path
+            fill-rule="evenodd"
+            d="M7 2a1 1 0 012 0v1h2V2a1 1 0 112 0v1h1a2 2 0 012 2v1h1a1 1 0 110 2h-1v2h1a1 1 0 110 2h-1v1a2 2 0 01-2 2v1a1 1 0 11-2 0v-1H9v1a1 1 0 11-2 0v-1H6a2 2 0 01-2-2v-1H3a1 1 0 110-2h1V8H3a1 1 0 010-2h1V5a2 2 0 012-2V2zm0 3h6a1 1 0 011 1v6a1 1 0 01-1 1H7a1 1 0 01-1-1V6a1 1 0 011-1z"
+            clip-rule="evenodd"
+          />
+        </svg>
+        <span>{{ $t("sidebar.tasks") }}</span>
+      </router-link>
+      <router-link
+        to="/projects"
+        class="tab"
+        :class="{ active: route.path === '/projects' }"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" width="19" height="19">
+          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+        </svg>
+        <span>{{ $t("sidebar.projects") }}</span>
+      </router-link>
+      <router-link
+        to="/statistics"
+        class="tab"
+        :class="{ active: route.path === '/statistics' }"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" width="19" height="19">
+          <path d="M2 10a8 8 0 018-8v8h8a8 8 0 11-16 0z" />
+          <path d="M12 2.252A8.014 8.014 0 0117.748 8H12V2.252z" />
+        </svg>
+        <span>{{ $t("sidebar.statistics") }}</span>
+      </router-link>
+      <button
+        type="button"
+        class="tab"
+        :class="{ active: showMoreSheet }"
+        :aria-expanded="showMoreSheet"
+        @click="showMoreSheet = !showMoreSheet"
+      >
+        <svg viewBox="0 0 20 20" fill="currentColor" width="19" height="19">
+          <path d="M6 10a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm5.5 0a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zm4 1.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z" />
+        </svg>
+        <span>{{ $t("sidebar.more") }}</span>
+      </button>
+    </nav>
+
+    <div
+      v-if="showMoreSheet && hasSidebar"
+      class="sheet-backdrop"
+      @click="showMoreSheet = false"
+    ></div>
+    <div v-if="showMoreSheet && hasSidebar" class="more-sheet">
+      <button
+        v-for="item in moreSheetItems"
+        :key="item.path"
+        type="button"
+        class="sheet-item"
+        @click="goFromSheet(item.path)"
+      >
+        {{ item.label }}
+      </button>
+      <button type="button" class="sheet-item" @click="openPreferences('computing')">
+        {{ $t("sidebar.preferences") }}
+      </button>
+    </div>
+
+    <StatusBar v-if="hasSidebar" />
+
+    <PreferencesDialog
+      :open="showPreferences"
+      :initial-tab="prefsInitialTab"
+      @close="showPreferences = false"
+    />
+    <AboutDialog :open="showAbout" @close="showAbout = false" />
+    <SelectComputerDialog
+      :open="showSelectComputer"
+      @close="showSelectComputer = false"
+      @connected="startAllPolling(); router.push('/')"
+    />
+    <ExitConfirmDialog
+      :open="showExitConfirm"
+      @close="showExitConfirm = false"
+      @confirm="doExit"
+    />
+    <ProjectAttachWizard
+      v-if="showAttachWizard"
+      :open="showAttachWizard"
+      @close="showAttachWizard = false"
+    />
+    <AccountManagerWizard
+      v-if="showAcctMgr"
+      :open="showAcctMgr"
+      @close="showAcctMgr = false"
+    />
+    <OnboardingTakeoverDialog
+      :open="showOnboarding"
+      :info="onboardingInfo"
+      @takeover="handleTakeover"
+      @keep-both="handleKeepBoth"
+    />
+    <BoincInstallDialog
+      v-if="installOptions"
+      :open="showInstallDialog"
+      :options="installOptions"
+      :installing="installing"
+      @install="handleInstallBrew"
+      @skip="handleSkipInstall"
+      @copy-command="handleCopyCommand"
+      @open-url="handleOpenUrl"
+    />
+    <ToastContainer />
+  </div>
+</template>
+
+<style>
+@import "./styles/tokens.css";
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI",
+    "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", Roboto,
+    Helvetica, Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  background: var(--color-bg);
+  font-size: var(--font-size-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Global focus-visible outline for keyboard navigation (WCAG 2.4.7) */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Remove default focus for mouse users */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Global button styles */
+.btn {
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-weight: 500;
+}
+
+.btn:hover {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+}
+
+.btn-primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.btn-danger:hover {
+  background: var(--color-danger-light);
+}
+
+/* Global input dark mode support */
+input,
+textarea,
+select {
+  color-scheme: light dark;
+}
+
+/* Global icon button style for drawer actions */
+.btn.icon-btn {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px !important;
+}
+
+.icon-btn svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* Global dialog animations */
+.dialog-overlay {
+  animation: overlay-in 0.2s ease;
+}
+
+.dialog-overlay > * {
+  animation: dialog-in 0.2s cubic-bezier(0.2, 0, 0.13, 1.5);
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+</style>
+
+<style scoped>
+.app {
+  height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+
+.app.has-sidebar .main-content {
+  margin-left: var(--sidebar-width);
+  flex: 1;
+  min-width: 0;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: var(--status-bar-offset, 0px);
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-width);
+  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  z-index: var(--z-sidebar-overlay);
+}
+
+/* ── Nav ──────────────────────────────────────────────────────── */
+
+.sidebar-nav {
+  flex: 1;
+  padding: 4px 0 4px 8px;
+  overflow-y: auto;
+}
+
+.nav-group {
+  margin-bottom: 16px;
+}
+
+.nav-group-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+
+.nav-group-label.clickable {
+  background: none;
+  border: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: left;
+  width: 100%;
+  margin-bottom: 2px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-sm);
+  position: relative;
+}
+
+.nav-group-label.clickable:hover {
+  color: var(--color-text-secondary);
+}
+
+.nav-group-chevron {
+  position: absolute;
+  left: -2px;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.nav-group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  margin-right: 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-md);
+  text-decoration: none;
+  color: var(--color-text-secondary);
+  font-weight: 450;
+  clip-path: polygon(0 0, 100% 0, 100% 50%, 100% 100%, 0 100%);
+  transition:
+    background 0.25s ease,
+    color 0.25s ease,
+    clip-path 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    margin-right 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    padding-right 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    border-radius 0.3s ease;
+}
+
+.nav-item:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.nav-item.active {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
+  font-weight: 550;
+  margin-right: 0;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  padding-right: 22px;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%);
+}
+
+.nav-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.nav-item-add {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.nav-item:hover .nav-item-add {
+  opacity: 1;
+}
+
+.nav-item.active .nav-item-add {
+  margin-right: 8px;
+}
+
+.nav-item-add:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-accent);
+}
+
+.nav-item.active .nav-icon {
+  opacity: 1;
+}
+
+/* ── Footer ───────────────────────────────────────────────────── */
+
+.sidebar-footer {
+  padding: 4px 12px 6px;
+  overflow: hidden;
+}
+
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background var(--transition-fast);
+}
+
+.sidebar-status:hover {
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot-connected {
+  background: var(--color-success);
+}
+
+.status-dot-reconnecting {
+  background: var(--color-warning);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.status-dot-error {
+  background: var(--color-danger);
+}
+
+.status-dot-disconnected {
+  background: var(--color-text-tertiary);
+}
+
+.status-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-actions-btns {
+  display: flex;
+  gap: 2px;
+}
+
+.sidebar-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.sidebar-action-btn:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+/* ── Loading screen ──────────────────────────────────────────── */
+
+.loading-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg);
+}
+
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.loading-logo {
+  width: 96px;
+  height: 96px;
+}
+
+.loading-app-title {
+  font-weight: 700;
+  font-size: 24px;
+  color: var(--color-text-primary);
+  letter-spacing: -0.01em;
+}
+
+.loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2.5px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.loading-text {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+.loading-cancel {
+  margin-top: 4px;
+  padding: 6px 24px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Skip-to-content link (visible only on keyboard focus) ──── */
+
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 16px;
+  z-index: 1000;
+  padding: 8px 16px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+  transition: top 0.15s ease;
+}
+
+.skip-link:focus {
+  top: 8px;
+}
+
+/* ── Hamburger button (mobile only) ─────────────────────────── */
+
+.hamburger-btn {
+  display: none;
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: var(--z-nav-header);
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+/* ── Bottom tab bar (mobile / 460px window) ─────────────────── */
+.bottom-tabs,
+.more-sheet,
+.sheet-backdrop {
+  display: none;
+}
+
+/* ── Responsive: mobile < 768px ─────────────────────────────── */
+
+@media (max-width: 767px) {
+  /* The drawer is replaced entirely by the bottom tab bar: opening a drawer
+     costs an extra tap, which the dashboard cannot afford. */
+  .hamburger-btn,
+  .sidebar,
+  .sidebar-backdrop {
+    display: none !important;
+  }
+
+  .app.has-sidebar .main-content {
+    margin-left: 0;
+    padding-top: 0;
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .bottom-tabs {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: var(--z-sidebar-overlay);
+    display: flex;
+    align-items: stretch;
+    height: calc(52px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: rgba(8, 8, 12, 0.94);
+    backdrop-filter: blur(14px);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .tab {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--color-text-tertiary);
+    font-size: 10px;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    position: relative;
+    transition: color var(--transition-fast);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .tab.active {
+    color: var(--color-accent-text);
+  }
+
+  .tab.active::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 22px;
+    height: 2px;
+    border-radius: 0 0 2px 2px;
+    background: var(--color-accent);
+  }
+
+  .tab:active {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .sheet-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: var(--z-nav-header);
+  }
+
+  .more-sheet {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    bottom: calc(58px + env(safe-area-inset-bottom, 0px));
+    z-index: calc(var(--z-nav-header) + 1);
+    display: flex;
+    flex-direction: column;
+    padding: 6px;
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    animation: sheet-in 0.16s ease;
+  }
+
+  @keyframes sheet-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+
+  .sheet-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-md);
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .sheet-item:active,
+  .sheet-item:hover {
+    background: var(--color-accent-light);
+  }
+}
+
+/* Keep the suspend banner above the tab bar instead of under it. */
+@media (max-width: 767px) {
+  .status-bar {
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  }
+}
+</style>
